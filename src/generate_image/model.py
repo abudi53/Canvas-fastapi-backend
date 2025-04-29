@@ -17,3 +17,11 @@ class ImageResponse(BaseModel):
 
 class ImageRequest(BaseModel):
     prompt: str = Field(..., description="The prompt used to generate the image.")
+
+
+# Add image update on the future
+class ImageUpdate(BaseModel):
+    prompt: str = Field(..., description="The new prompt for the image.")
+    image_base64: str = Field(
+        ..., description="The new base64 encoded string of the generated image."
+    )
