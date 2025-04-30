@@ -12,10 +12,10 @@ client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 # https://ai.google.dev/gemini-api/docs/image-generation
 
 
-def generate_image_service(prompt: str):
+async def generate_image_service(prompt: str) -> str:
     prompt_template: str = "Generate an image of a {prompt}."
 
-    response = client.models.generate_content(
+    response = await client.aio.models.generate_content(
         model="gemini-2.0-flash-exp-image-generation",
         contents=prompt_template.format(prompt=prompt),
         config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
@@ -28,9 +28,9 @@ def generate_image_service(prompt: str):
             base64encoded_image = base64.b64encode(part.inline_data.data).decode(  # type: ignore
                 "utf-8"
             )
-            return base64encoded_image  # type: ignore
-        else:
-            return "No image data found in the response."
+            return base64encoded_image
+
+    return "No image data found in the response."
 
 
 ####### HUGGING FACE MODEL INFERENCE #######
