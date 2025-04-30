@@ -18,7 +18,9 @@ from fastapi import HTTPException
 async def generate_image_service(prompt: str) -> str:
     # Initialize client inside the function
     client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-    prompt_template: str = "Generate an image of a {prompt}."
+    prompt_template: str = (
+        "Generate an image of a {prompt} with a width of 640 and a height of 352."
+    )
     logging.info(f"Generating image for prompt: {prompt}")
 
     # Add logging before the call
