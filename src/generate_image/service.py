@@ -3,9 +3,12 @@ from google import genai
 from google.genai import types
 import base64
 import os
+import logging
+from fastapi import HTTPException
+# import asyncio  # Import asyncio for the test
 
-
-client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+# Remove global client initialization
+# client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
 # Docs: Generate Image on bytes, encode it to base64, and return it as a string
@@ -13,23 +16,44 @@ client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 
 async def generate_image_service(prompt: str) -> str:
+    # Initialize client inside the function
+    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
     prompt_template: str = "Generate an image of a {prompt}."
+    logging.info(f"Generating image for prompt: {prompt}")
 
-    response = await client.aio.models.generate_content(
-        model="gemini-2.0-flash-exp-image-generation",
-        contents=prompt_template.format(prompt=prompt),
-        config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
-    )
+    # Add logging before the call
+    logging.info("Attempting to call client.aio.models.generate_content")
+    try:
+        response = await client.aio.models.generate_content(
+            model="gemini-2.0-flash-exp-image-generation",
+            contents=prompt_template.format(prompt=prompt),
+            config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+        )
+        # Add logging after the call
+        logging.info(
+            f"Response received successfully: {response.candidates[0].finish_reason if response.candidates else 'No candidates'}"
+        )  # Log finish reason or indicate no candidates
+    except Exception as e:
+        logging.error(
+            f"Error during generate_content call: {e}", exc_info=True
+        )  # Log full exception
+        # Re-raise the exception or handle it appropriately
+        raise HTTPException(
+            status_code=500, detail=f"Google GenAI API call failed: {e}"
+        )
+
+    if not response.candidates:
+        logging.warning("No candidates found in the response.")
+        return "No image data found in the response."
 
     for part in response.candidates[0].content.parts:  # type: ignore
-        # if part.text is not None:
-        #     print(part.text)
         if part.inline_data is not None:
             base64encoded_image = base64.b64encode(part.inline_data.data).decode(  # type: ignore
                 "utf-8"
             )
             return base64encoded_image
 
+    logging.warning("No inline_data found in response parts.")
     return "No image data found in the response."
 
 
