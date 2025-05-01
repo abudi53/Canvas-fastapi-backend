@@ -1,6 +1,7 @@
 import os
 from uuid import UUID, uuid4
-from fastapi import Depends
+from fastapi import Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from typing import Annotated
 from datetime import datetime, timedelta, timezone
 import jwt
@@ -75,11 +76,28 @@ def register_user(
         )
         db.add(db_user)
         db.commit()
+        db.refresh(db_user)
+
+    except IntegrityError as e:
+        db.rollback()  # Rollback the session to a clean state
+        logging.warning(
+            f"IntegrityError registering user {register_user_request.username} or email {register_user_request.email}: {e}"
+        )
+        # You might be able to inspect e.orig or e.detail for specific constraint names
+        # depending on the database driver, but a general message is often safer.
+        raise HTTPException(
+            status_code=409,  # 409 Conflict is appropriate here
+            detail="Username or email already exists.",
+        )
     except Exception as e:
+        db.rollback()  # Also rollback in case of other commit errors
         logging.error(
             f"Error registering user: {register_user_request.username}. Error: {e}"
         )
-        raise
+        # Re-raise as a generic server error or a specific HTTP exception if appropriate
+        raise HTTPException(
+            status_code=500, detail="An unexpected error occurred during registration."
+        )
 
 
 def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]) -> model.TokenData:
