@@ -1,6 +1,6 @@
 import os
 from uuid import UUID, uuid4
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from typing import Annotated
 from datetime import datetime, timedelta, timezone
@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from . import model
 from src.entities.user import User
-from ..exceptions import AuthenticationError
 import logging
 
 
@@ -55,13 +54,22 @@ def create_access_token(email: str, user_id: UUID, expires_delta: timedelta) -> 
 
 
 def verify_token(token: str) -> model.TokenData:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])  # type: ignore
-        user_id: str = payload.get("user_id")
+        user_id: str | None = payload.get("user_id")
+        if user_id is None:
+            logging.warning("Token verification failed: user_id not in payload")
+            raise credentials_exception
         return model.TokenData(user_id=user_id)
-    except PyJWTError as e:
+    # Catch the specific JWT error you expect
+    except PyJWTError as e:  # Or except JWTError as e:
         logging.warning(f"Token verification failed: {e}")
-        raise AuthenticationError()
+        raise credentials_exception
 
 
 def register_user(
@@ -113,7 +121,12 @@ def login_for_access_token(
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         logging.warning(f"Authentication failed for user {form_data.username}")
-        raise AuthenticationError()
+        # Raise HTTPException for failed login attempt
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token = create_access_token(
         email=user.email,  # type: ignore
         user_id=user.id,  # type: ignore
