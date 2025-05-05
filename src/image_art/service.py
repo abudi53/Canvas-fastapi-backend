@@ -13,6 +13,7 @@ from google.cloud import storage
 from google.api_core import exceptions as google_exceptions
 from google.oauth2 import service_account
 from ..entities.image import Image
+import asyncio
 # from ..entities.user import User
 
 # --- GCS Configuration ---
@@ -102,28 +103,16 @@ except Exception as e:
 async def generate_image_service(prompt: str) -> str:
     # Initialize client inside the function
     client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-    prompt_template: str = (
-        "Generate an image of a {prompt} with a width of 640 and a height of 352."
-    )
-    logging.info(f"Generating image for prompt: {prompt}")
+    prompt_template: str = "Generate an image of a {prompt} with a width of 640 and a height of 352 EXPLICITLY."
 
-    # Add logging before the call
-    logging.info("Attempting to call client.aio.models.generate_content")
     try:
         response = await client.aio.models.generate_content(
             model="gemini-2.0-flash-exp-image-generation",
             contents=prompt_template.format(prompt=prompt),
             config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
         )
-        # Add logging after the call
-        logging.info(
-            f"Response received successfully: {response.candidates[0].finish_reason if response.candidates else 'No candidates'}"
-        )  # Log finish reason or indicate no candidates
     except Exception as e:
-        logging.error(
-            f"Error during generate_content call: {e}", exc_info=True
-        )  # Log full exception
-        # Re-raise the exception or handle it appropriately
+        logging.error(f"Error during generate_content call: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Google GenAI API call failed: {e}"
         )
@@ -167,49 +156,81 @@ async def save_user_image(
             detail="Server configuration error: Image storage project ID missing.",
         )
 
+    # Define sync helper for DB commit/refresh to run in thread
+    def _commit_and_refresh_db(session: Session, image_obj: Image):
+        try:
+            session.add(image_obj)
+            session.commit()
+            session.refresh(image_obj)
+            logging.info(
+                f"Image record committed and refreshed in DB for user {image_obj.user_id} with path {image_obj.file_path}"
+            )
+        except Exception as commit_exc:
+            logging.error(
+                f"Database commit/refresh failed: {commit_exc}", exc_info=True
+            )
+            session.rollback()  # Rollback on commit/refresh error
+            # Re-raise to be caught by the outer try...except
+            raise commit_exc
+
     try:
+        # CPU-bound, no await needed
         image_bytes = base64.b64decode(image_base64)
 
         # Generate a unique blob name (path within the bucket)
         file_extension = ".png"
         blob_name = f"user_images/{user_id}/{uuid.uuid4()}{file_extension}"
 
-        # Get the bucket (uses client's project ID implicitly if not specified)
+        # Get the bucket (sync)
         bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        # Create a blob object (sync)
         blob = bucket.blob(blob_name)
 
-        # Upload the image bytes
+        # Upload the image bytes in a separate thread
         content_type = "image/png"
-        blob.upload_from_string(image_bytes, content_type=content_type)
+        logging.info(f"Uploading image to GCS: gs://{GCS_BUCKET_NAME}/{blob_name}")
+        # Use await asyncio.to_thread for the blocking upload
+        await asyncio.to_thread(
+            blob.upload_from_string, image_bytes, content_type=content_type
+        )
+        logging.info("Successfully uploaded image to GCS.")
 
-        logging.info(f"Image uploaded to GCS: gs://{GCS_BUCKET_NAME}/{blob_name}")
-
-        # Create database record
+        # Create database record object (sync)
         db_image = Image(
             user_id=user_id,
             file_path=blob_name,
             prompt=prompt,
         )
-        db.add(db_image)
-        db.commit()
-        db.refresh(db_image)
-        logging.info(
-            f"Image record created in DB for user {user_id} with path {blob_name}"
-        )
+
+        # Add, commit, and refresh in a separate thread
+        await asyncio.to_thread(_commit_and_refresh_db, db, db_image)
+
         return db_image
 
     except binascii.Error as e:
         logging.error(f"Error decoding base64 image for user {user_id}: {e}")
         raise HTTPException(status_code=400, detail="Invalid image data format.")
     except google_exceptions.GoogleAPIError as e:
+        # This might be caught inside to_thread or directly if client interaction fails before upload
         logging.error(f"Error interacting with GCS for user {user_id}: {e}")
-        db.rollback()
+        # Rollback might be needed if error happens after add but before/during commit
+        # The helper function _commit_and_refresh_db handles rollback on commit error
+        # If GCS error happens before DB commit, rollback isn't strictly needed but doesn't hurt
+        try:
+            db.rollback()
+        except Exception as rb_exc:
+            logging.error(f"Rollback failed after GCS error: {rb_exc}")
         raise HTTPException(
             status_code=500, detail="Error interacting with cloud storage."
         )
     except Exception as e:
-        db.rollback()
+        # Catch potential errors from _commit_and_refresh_db or other unexpected issues
         logging.error(f"Error saving image for user {user_id}: {e}", exc_info=True)
+        # Ensure rollback happens for any exception during the process
+        try:
+            db.rollback()
+        except Exception as rb_exc:
+            logging.error(f"Rollback failed after general error: {rb_exc}")
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred while saving the image.",
