@@ -18,12 +18,19 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 if not GCS_BUCKET_NAME:
     logging.error("GCS_BUCKET_NAME environment variable not set.")
 
+storage_client = None  # Initialize as None
 try:
-    storage_client = storage.Client()
+    # Check if credentials path/content is set before initializing
+    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        storage_client = storage.Client()
+        logging.info("Google Cloud Storage client initialized successfully.")
+    else:
+        logging.warning(
+            "GOOGLE_APPLICATION_CREDENTIALS environment variable not set. GCS client not initialized."
+        )
 except Exception as e:
     logging.error(f"Failed to initialize Google Cloud Storage client: {e}")
-    storage_client = None  # Handle cases where client init fails
-
+    # storage_client remains None
 
 # Docs: Generate Image on bytes, encode it to base64, and return it as a string
 # https://ai.google.dev/gemini-api/docs/image-generation
