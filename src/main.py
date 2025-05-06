@@ -1,7 +1,8 @@
 from .api import register_routes
 from fastapi import FastAPI
 from .logging import configure_logging, LogLevels
-from .database.core import engine, Base
+
+# from .database.core import engine, Base
 import os
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,7 +15,7 @@ app = FastAPI()
 the database tables 
 """
 
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)
 
 # Register routes
 register_routes(app)

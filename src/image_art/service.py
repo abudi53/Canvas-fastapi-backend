@@ -16,7 +16,6 @@ from google.api_core import exceptions as google_exceptions
 from google.oauth2 import service_account
 from ..entities.image import Image
 import asyncio
-# from ..entities.user import User
 
 # --- GCS Configuration ---
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
@@ -105,7 +104,7 @@ except Exception as e:
 async def generate_image_service(prompt: str) -> str:
     # Initialize client inside the function
     client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
-    prompt_template: str = "Generate an image of a {prompt} with a width of 640 and a height of 352 EXPLICITLY."
+    prompt_template: str = "Generate an image of a {prompt}, 640x352 pixels"
 
     try:
         response = await client.aio.models.generate_content(
@@ -241,20 +240,6 @@ async def save_user_image(
 
 async def get_user_images_with_urls(db: Session, user_id: UUID) -> List[Dict[str, Any]]:
     """Fetches user images from DB and generates signed GCS URLs."""
-    if not storage_client or not GCS_BUCKET_NAME:
-        logging.error(
-            "Attempted to list images, but GCS is not configured (client init failed or bucket name missing)."
-        )
-        raise HTTPException(
-            status_code=500,
-            detail="Server configuration error: Image storage is not set up correctly.",
-        )
-    if not storage_client.project:
-        logging.error("GCS client is missing project ID, cannot list images.")
-        raise HTTPException(
-            status_code=500,
-            detail="Server configuration error: Image storage project ID missing.",
-        )
 
     # Define sync helper for DB query
     def _fetch_images_db(session: Session, user_uuid: UUID) -> List[Image]:
@@ -289,8 +274,6 @@ async def get_user_images_with_urls(db: Session, user_id: UUID) -> List[Dict[str
             return url
         except google_exceptions.NotFound:
             logging.error(f"GCS blob not found: {blob_name}")
-            # Decide how to handle: return None, raise specific error, return placeholder URL?
-            # Returning None or an empty string might be suitable for the controller to filter.
             return ""
         except Exception as url_exc:
             logging.error(
@@ -317,9 +300,7 @@ async def get_user_images_with_urls(db: Session, user_id: UUID) -> List[Dict[str
                 logging.warning(
                     f"Image record {image.id} for user {user_id} has no file_path."
                 )
-                # Add a placeholder or skip? Adding None to match task list length if needed.
-                # Or structure differently to avoid needing placeholders. Let's restructure slightly.
-                pass  # Skip if no file_path
+                pass
 
         # Filter images that have a file_path before creating tasks
         images_with_paths = [img for img in user_images if img.file_path]  # type: ignore

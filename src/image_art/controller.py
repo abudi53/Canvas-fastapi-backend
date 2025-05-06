@@ -105,8 +105,6 @@ async def list_my_images(
         # Call the service function to get image data with signed URLs
         images_data = await get_user_images_with_urls(db=db, user_id=user_uuid)
 
-        # FastAPI will automatically convert the list of dicts
-        # to a list of UserImageResponse objects
         return images_data  # type: ignore
 
     except HTTPException as e:
