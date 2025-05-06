@@ -31,3 +31,12 @@ class ImageUpdate(BaseModel):
     image_base64: str = Field(
         ..., description="The new base64 encoded string of the generated image."
     )
+
+
+class UserImageResponse(BaseModel):
+    """Response model for listing a user's image with its access URL."""
+
+    id: UUID
+    prompt: str | None
+    created_at: datetime
+    image_url: str  # The signed URL for accessing the image

@@ -1,11 +1,12 @@
 from fastapi import APIRouter, HTTPException, Request
-from .service import generate_image_service, save_user_image
-from .model import ImageResponse, SaveImageRequest
+from .service import generate_image_service, save_user_image, get_user_images_with_urls
+from .model import ImageResponse, SaveImageRequest, UserImageResponse
 from ..auth.service import CurrentUser
 from ..database.core import DbSession
 from ..entities.image import Image
 import logging
 from ..rate_limiting import limiter
+from typing import List
 
 
 router = APIRouter(prefix="/image", tags=["Image"])
@@ -74,4 +75,46 @@ async def save_generated_image(
         logging.error(f"Error saving image for user {user_uuid}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail="An error occurred while saving the image."
+        )
+
+
+@router.get(
+    "/me",
+    response_model=List[UserImageResponse],
+    summary="List My Images (Auth Required)",
+)
+@limiter.limit("30/minute")  # Example rate limit
+async def list_my_images(
+    request: Request,  # Needed for limiter
+    current_user: CurrentUser,
+    db: DbSession,
+) -> List[UserImageResponse]:
+    """
+    Retrieves a list of images belonging to the authenticated user,
+    including temporary signed URLs to access them in GCS.
+    """
+    if not current_user.user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    user_uuid = current_user.get_uuid()
+    if not user_uuid:
+        raise HTTPException(status_code=401, detail="Invalid user identifier in token")
+
+    try:
+        logging.info(f"Fetching images for user {user_uuid}")
+        # Call the service function to get image data with signed URLs
+        images_data = await get_user_images_with_urls(db=db, user_id=user_uuid)
+
+        # FastAPI will automatically convert the list of dicts
+        # to a list of UserImageResponse objects
+        return images_data  # type: ignore
+
+    except HTTPException as e:
+        # Re-raise known HTTP exceptions
+        raise e
+    except Exception as e:
+        # Log unexpected errors
+        logging.error(f"Error listing images for user {user_uuid}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="An error occurred while retrieving images."
         )

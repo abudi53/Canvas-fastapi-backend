@@ -1,6 +1,8 @@
 # from huggingface_hub import InferenceClient
 from google import genai
 from google.genai import types
+from typing import List, Dict, Any
+from datetime import timedelta
 import base64
 import binascii
 import os
@@ -234,4 +236,143 @@ async def save_user_image(
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred while saving the image.",
+        )
+
+
+async def get_user_images_with_urls(db: Session, user_id: UUID) -> List[Dict[str, Any]]:
+    """Fetches user images from DB and generates signed GCS URLs."""
+    if not storage_client or not GCS_BUCKET_NAME:
+        logging.error(
+            "Attempted to list images, but GCS is not configured (client init failed or bucket name missing)."
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Server configuration error: Image storage is not set up correctly.",
+        )
+    if not storage_client.project:
+        logging.error("GCS client is missing project ID, cannot list images.")
+        raise HTTPException(
+            status_code=500,
+            detail="Server configuration error: Image storage project ID missing.",
+        )
+
+    # Define sync helper for DB query
+    def _fetch_images_db(session: Session, user_uuid: UUID) -> List[Image]:
+        try:
+            images = (
+                session.query(Image)
+                .filter(Image.user_id == user_uuid)
+                .order_by(Image.created_at.desc())
+                .all()
+            )
+            logging.info(
+                f"Fetched {len(images)} image records for user {user_uuid} from DB."
+            )
+            return images
+        except Exception as db_exc:
+            logging.error(
+                f"Database query failed for user {user_uuid}: {db_exc}", exc_info=True
+            )
+            raise db_exc  # Re-raise to be caught by outer try...except
+
+    # Define sync helper for generating a signed URL
+    def _generate_signed_url_sync(blob_name: str) -> str:
+        try:
+            bucket = storage_client.bucket(GCS_BUCKET_NAME)  # type: ignore
+            blob = bucket.blob(blob_name)
+            # Generate a signed URL valid for 15 minutes (adjust as needed)
+            url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(minutes=15),
+                method="GET",
+            )
+            return url
+        except google_exceptions.NotFound:
+            logging.error(f"GCS blob not found: {blob_name}")
+            # Decide how to handle: return None, raise specific error, return placeholder URL?
+            # Returning None or an empty string might be suitable for the controller to filter.
+            return ""
+        except Exception as url_exc:
+            logging.error(
+                f"Failed to generate signed URL for {blob_name}: {url_exc}",
+                exc_info=True,
+            )
+            raise url_exc  # Re-raise
+
+    try:
+        # Fetch image records from DB in a thread
+        user_images = await asyncio.to_thread(_fetch_images_db, db, user_id)
+
+        image_data_with_urls = []
+
+        # Generate signed URLs concurrently using asyncio.gather
+        url_tasks = []
+        for image in user_images:
+            if image.file_path:  # type: ignore
+                url_tasks.append(
+                    asyncio.to_thread(_generate_signed_url_sync, image.file_path)  # type: ignore
+                )
+            else:
+                # Handle cases where file_path might be missing (shouldn't happen ideally)
+                logging.warning(
+                    f"Image record {image.id} for user {user_id} has no file_path."
+                )
+                # Add a placeholder or skip? Adding None to match task list length if needed.
+                # Or structure differently to avoid needing placeholders. Let's restructure slightly.
+                pass  # Skip if no file_path
+
+        # Filter images that have a file_path before creating tasks
+        images_with_paths = [img for img in user_images if img.file_path]  # type: ignore
+        url_tasks = [
+            asyncio.to_thread(_generate_signed_url_sync, img.file_path)  # type: ignore
+            for img in images_with_paths
+        ]
+
+        # Run URL generation tasks concurrently
+        signed_urls = await asyncio.gather(*url_tasks, return_exceptions=True)
+
+        # Combine image data with generated URLs
+        for image, url_or_exc in zip(images_with_paths, signed_urls):
+            if isinstance(url_or_exc, Exception):
+                # Log the error captured by gather
+                logging.error(
+                    f"Failed to get signed URL for image {image.id} (path: {image.file_path}): {url_or_exc}"
+                )
+                image_url = None  # Indicate failure
+            elif (
+                not url_or_exc
+            ):  # Handle empty string case from _generate_signed_url_sync
+                logging.warning(
+                    f"Signed URL generation returned empty for image {image.id} (path: {image.file_path}), likely blob not found."
+                )
+                image_url = None
+            else:
+                image_url = url_or_exc
+
+            # Append data only if URL generation was successful (or handle failures differently)
+            if image_url:
+                image_data_with_urls.append(
+                    {
+                        "id": image.id,
+                        "file_path": image.file_path,  # Keep original path for reference if needed
+                        "prompt": image.prompt,
+                        "created_at": image.created_at,
+                        "image_url": image_url,  # The temporary access URL
+                    }
+                )
+            # Else: Decide if you want to include records where URL generation failed
+
+        logging.info(
+            f"Prepared {len(image_data_with_urls)} image entries with signed URLs for user {user_id}."
+        )
+        return image_data_with_urls
+
+    except Exception as e:
+        # Catch errors from DB query or URL generation helpers
+        logging.error(
+            f"Error retrieving images or URLs for user {user_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while retrieving user images.",
         )
