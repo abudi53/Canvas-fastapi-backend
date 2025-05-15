@@ -1,2 +1,2 @@
-# Fullday-fastapi-backend
-rework of the fullday backend, now in fastapi
+# Canvas-fastapi-backend
+rework of the Sensory canvas backend, now in fastapi
